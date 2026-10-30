@@ -1,0 +1,40 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@talk2myagent/a2a-relay-protocol':
+        specifier: file:vendor/a2a-relay-protocol
+        version: file:vendor/a2a-relay-protocol
+      ws:
+        specifier: ^8.18.3
+        version: 8.22.0
+
+packages:
+
+  '@talk2myagent/a2a-relay-protocol@file:vendor/a2a-relay-protocol':
+    resolution: {directory: vendor/a2a-relay-protocol, type: directory}
+    engines: {node: '>=22.13'}
+
+  ws@8.22.0:
+    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+snapshots:
+
+  '@talk2myagent/a2a-relay-protocol@file:vendor/a2a-relay-protocol': {}
+
+  ws@8.22.0: {}

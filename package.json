@@ -1,0 +1,1 @@
+{"name":"a2a-relay-server","version":"0.1.0","private":true,"type":"module","description":"Self-hosted A2A reverse relay","license":"MIT","engines":{"node":">=22.13"},"scripts":{"start":"node src/cli.mjs","test":"node --test tests/*.test.mjs"},"dependencies":{"@talk2myagent/a2a-relay-protocol":"file:vendor/a2a-relay-protocol","ws":"^8.18.3"}}

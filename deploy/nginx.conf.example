@@ -1,0 +1,17 @@
+# Include in a TLS server block. Provision certificate/server_name separately.
+# Set RELAY_ORIGIN=https://your-host and RELAY_TRUSTED_PROXY_IPS=127.0.0.1.
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 660s;
+    proxy_send_timeout 660s;
+    client_max_body_size 1000000;
+    # Requests contain visitor/device bearer credentials. Do not log headers or bodies.
+    access_log off;
+}
