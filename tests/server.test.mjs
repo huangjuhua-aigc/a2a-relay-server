@@ -52,10 +52,12 @@ test('registration policy, malformed JSON and IP rates are enforced by HTTP', as
       await new Promise(r=>relay.server.listen(0,'127.0.0.1',r))
       const base=`http://127.0.0.1:${relay.server.address().port}`
       assert.equal((await fetch(`${base}/v1/agents/register`,{method:'POST',body:'not-json'})).status,registrationEnabled?400:403)
-      assert.equal((await fetch(`${base}/health`)).status,200)
-      assert.equal((await fetch(`${base}/health`)).status,200)
+      assert.equal((await fetch(`${base}/unknown`)).status,404)
+      assert.equal((await fetch(`${base}/unknown`)).status,404)
       // An untrusted forwarded address cannot reset the rate bucket.
-      assert.equal((await fetch(`${base}/health`,{headers:{'x-forwarded-for':'1.2.3.4'}})).status,429)
+      assert.equal((await fetch(`${base}/unknown`,{headers:{'x-forwarded-for':'1.2.3.4'}})).status,429)
+      // Probes continue to succeed after the same source exhausts its quota.
+      for (let i=0;i<5;i++) assert.equal((await fetch(`${base}/health`)).status,200)
     } finally {await relay.close()}
   }
 })

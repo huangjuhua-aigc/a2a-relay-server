@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "outputDirectory": "public",
+  "fluid": true,
+  "regions": ["hnd1"],
+  "functions": {
+    "api/relay.mjs": { "maxDuration": 300 }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/relay" }
+  ]
+}

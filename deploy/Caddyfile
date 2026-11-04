@@ -1,0 +1,31 @@
+{
+	admin off
+	http_port 8080
+	https_port 8443
+	# IP clients usually omit SNI; the Pod's private address is not the cert SAN.
+	default_sni {$RELAY_TLS_NAME}
+	auto_https disable_redirects
+}
+
+# Explicit ACME issuer is required: IP sites otherwise use Caddy's local CA.
+# Public certificates for IPs require the shortlived profile. Caddy stores its
+# account and certificates under /data/caddy and renews them automatically.
+{$RELAY_ORIGIN} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+	request_body {
+		max_size 1000000
+	}
+	reverse_proxy 127.0.0.1:8787 {
+		# Do not trust visitor-supplied forwarding headers.
+		header_up X-Forwarded-For {http.request.remote.host}
+		flush_interval -1
+		transport http {
+			response_header_timeout 95s
+		}
+	}
+}
