@@ -33,12 +33,20 @@ async function fixture(options = {}) {
   const store = new PostgresStore({ ...adminConfig, database }); await store.migrate()
   const workers = [], holds = [], upgrades = new Set(), statuses = [], calls = []
   const visitorToken = randomBytes(32).toString('hex')
+  const fileId=randomUUID(), fileBytes=Buffer.alloc(1600007,197)
   const local = http.createServer(async (req, res) => {
     if (req.url === '/.well-known/agent-card.json') {
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ name: '真实 Connector 传输测试', supportedInterfaces: [{ url: 'http://127.0.0.1/a2a', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }] })); return
     }
     if (req.headers.authorization !== `Bearer ${visitorToken}`) { res.writeHead(401); res.end('denied'); return }
+    if(req.url===`/a2a/files/${fileId}`){
+      const match=/^bytes=(\d+)-(\d+)$/.exec(req.headers.range??'')
+      const start=match?Number(match[1]):0,end=match?Number(match[2]):fileBytes.length-1
+      res.writeHead(match?206:200,{'content-type':'video/mp4','content-length':String(end-start+1),etag:'"file-etag"','accept-ranges':'bytes',
+        'content-disposition':'attachment; filename="video.mp4"',...match?{'content-range':`bytes ${start}-${end}/${fileBytes.length}`}:{}})
+      res.end(req.method==='HEAD'?undefined:fileBytes.subarray(start,end+1));return
+    }
     const input = JSON.parse((await readLimited(req)).toString())
     calls.push(input)
     if (input.kind === 'hold') { holds.push(res); req.on('error', () => {}); return }
@@ -119,7 +127,8 @@ async function fixture(options = {}) {
     info = connector.registration.info; deviceToken = connector.registration.token
     const send = (body, init = {}) => fetch(info.publicRpcUrl, { method: 'POST', headers: { authorization: `Bearer ${visitorToken}`, 'content-type': 'application/json' }, body: JSON.stringify(body), ...init })
     return { origin, info, send, calls, statuses, stats, store, bus, control: (path, method, body) => control(origin, path, deviceToken, method, body),
-      owner: () => owner, gateway: () => gateway, env, holds,
+      owner: () => owner, gateway: () => gateway, env, holds, fileBytes,
+      file:(init={})=>fetch(`${info.publicRpcUrl}/files/${fileId}`,{...init,headers:{authorization:`Bearer ${visitorToken}`,...init.headers}}),
       async replaceOwner() { await stop(owner, true); owner = await worker(); return owner },
       async extraGateway(extra = {}) { return worker(extra) },
       async close() {
@@ -165,6 +174,19 @@ clusterTest('separate owner/gateway processes route card, authenticated RPC, Uni
     assert.ok(events.every((event, i) => event.i === i && event.nonce === nonce && event.text === '你好🌏'.repeat(2000)))
     await until(async () => (await f.stats(f.owner())).incoming === 0 && (await f.stats(f.gateway())).outgoing === 0)
   } finally { await f.close() }
+})
+
+clusterTest('binary file GET, HEAD, Range and auth cross separate gateways without persistence',async()=>{
+  const f=await fixture()
+  try{
+    const head=await f.file({method:'HEAD'});assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(f.fileBytes.length));assert.equal(await head.text(),'')
+    const full=await f.file();assert.equal(full.headers.get('content-type'),'video/mp4');assert.deepEqual(Buffer.from(await full.arrayBuffer()),f.fileBytes)
+    const part=await f.file({headers:{range:'bytes=13-999999','if-range':'"file-etag"'}})
+    assert.equal(part.status,206);assert.equal(part.headers.get('content-range'),`bytes 13-999999/${f.fileBytes.length}`);assert.deepEqual(Buffer.from(await part.arrayBuffer()),f.fileBytes.subarray(13,1000000))
+    assert.equal((await f.file({headers:{authorization:'Bearer wrong'}})).status,401)
+    assert.equal((await f.file({method:'DELETE'})).status,405)
+    await until(async()=>!(await f.stats(f.owner())).incoming&&!(await f.stats(f.gateway())).outgoing)
+  }finally{await f.close()}
 })
 
 clusterTest('agent concurrency is shared across gateways; client cancellation frees slots and aborts local calls', async () => {

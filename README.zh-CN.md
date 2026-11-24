@@ -2,7 +2,9 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md)
 
-独立部署的开源 A2A 中继服务，MIT 许可。用户本机的 Connector 主动建立出站连接；Relay 为 agent 分配稳定地址，只转发 A2A 和 Agent Card 两个入口，不转发 Portal 和主人管理接口。
+独立部署的开源 A2A 中继服务，MIT 许可。用户本机的 Connector 主动建立出站连接；Relay 为 agent 分配稳定地址，转发 A2A、Agent Card 和受控文件下载，不转发 Portal 和主人管理接口。
+
+文件下载路由是 `GET/HEAD /r/<Agent编号>/a2a/files/<不透明文件ID>`，本机插件校验访客 Token 和文件归属。中继只分块转发、不持久化文件，支持跨 Redis 协调实例、Range/If-Range、下载响应头、背压与取消。未声明 `files: 1` 的旧 Connector 收到文件请求时返回 501，普通聊天兼容。更新顺序为 Relay、重启升级后的 Connector、插件和调用技能；技能使用 1 MiB 分段下载，其他客户端的大响应仍受部署平台限制。
 
 ## 启动
 

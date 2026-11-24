@@ -2,7 +2,9 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-A self-hosted reverse relay for local HTTP A2A agents. A Connector opens an outbound WebSocket, registers an agent and exposes only its public Agent Card and JSON-RPC endpoint. The local Portal and owner APIs are never forwarded. MIT licensed; this repository runs independently of Talk2MyAgent.
+A self-hosted reverse relay for local HTTP A2A agents. A Connector opens an outbound WebSocket, registers an agent and exposes its public Agent Card, JSON-RPC endpoint and authenticated file downloads. The local Portal and owner APIs are never forwarded. MIT licensed; this repository runs independently of Talk2MyAgent.
+
+File downloads use `GET/HEAD /r/<Agent ID>/a2a/files/<opaqueFileId>`. The local plugin checks the visitor Bearer token and file ownership. Relay forwards bounded chunks with backpressure and cancellation, including across Redis-coordinated instances; it does not persist file contents. Range/If-Range and download metadata are preserved. New Relay returns 501 for file requests to old Connectors without the `files: 1` capability; normal chat remains compatible. Update Relay, restart upgraded Connectors, then update plugin and calling skill. The skill uses 1 MiB range requests; raw large responses remain subject to hosting platform limits.
 
 ## Run
 

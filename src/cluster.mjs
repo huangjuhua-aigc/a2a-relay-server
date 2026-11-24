@@ -179,9 +179,9 @@ export class ClusterForwarder extends EventEmitter {
     f.touch(15000)
     try {
       const body = await readLimited(req)
-      if (route === 'card' && body.length) throw fail(400, 'Card GET must not have a body')
+      if (route !== 'rpc' && body.length) throw fail(400, 'Read requests must not have a body')
       if (f.done) return
-      await f.send({ kind: 'open', route, headers, length: body.length })
+      await f.send({ kind: 'open', route, headers, length: body.length, ...route === 'file' ? {fileId:req.fileId, method:req.method} : {} })
       if (await accepted.promise && !f.done) {
         f.touch(LIMIT.first)
         let seq = 0
@@ -232,14 +232,15 @@ export class ClusterForwarder extends EventEmitter {
     const owner = { node: this.bus.id, publicationId: message.publicationId, connectionId: message.connectionId, generation: message.generation }
     const context = contextOf(owner, message.requestId)
     const send = payload => this.bus.send(message.from, { ...context, ...payload })
-    if (!['card', 'rpc'].includes(message.route) || !Number.isInteger(message.length) || message.length < 0 || message.length > LIMIT.body ||
-        message.route === 'card' && message.length || this.incoming.size >= this.maxConcurrent || !this.dispatch) {
+    if (!['card', 'rpc', 'file'].includes(message.route) || !Number.isInteger(message.length) || message.length < 0 || message.length > LIMIT.body ||
+        message.route !== 'rpc' && message.length || message.route === 'file' && (!/^[a-f0-9-]{36}$/.test(message.fileId ?? '') || !['GET','HEAD'].includes(message.method)) || this.incoming.size >= this.maxConcurrent || !this.dispatch) {
       await send({ kind: 'failed' }).catch(() => {}); return
     }
     let headers
     try { headers = headersOf(message.headers) } catch { await send({ kind: 'failed' }).catch(() => {}); return }
     const req = new PassThrough({ highWaterMark: LIMIT.chunk })
     req.headers = { ...headers, 'content-length': String(message.length) }
+    req.fileId = message.fileId; req.method = message.method ?? (message.route === 'rpc' ? 'POST' : 'GET')
     req.complete = false
     req.on('error', () => {})
     const res = new RemoteResponse(send)

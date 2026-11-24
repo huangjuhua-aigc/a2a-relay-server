@@ -102,10 +102,11 @@ export function createRelay({ origin, database = ':memory:', store: suppliedStor
       }
       throw fail(405, 'Method not allowed')
     }
-    const match = /^\/r\/([a-zA-Z0-9_-]{16,80}|1[3-9]\d{9})\/(a2a|\.well-known\/agent-card\.json)$/.exec(path)
+    const match = /^\/r\/([a-zA-Z0-9_-]{16,80}|1[3-9]\d{9})\/(a2a|\.well-known\/agent-card\.json|a2a\/files\/([a-f0-9-]{36}))$/.exec(path)
     if (!match) throw fail(404, 'Unknown route')
-    const route = match[2] === 'a2a' ? 'rpc' : 'card'
-    if (req.method !== (route === 'rpc' ? 'POST' : 'GET')) throw fail(405, 'Method not allowed')
+    const route = match[3] ? 'file' : match[2] === 'a2a' ? 'rpc' : 'card'
+    if (route === 'file' ? !['GET','HEAD'].includes(req.method) : req.method !== (route === 'rpc' ? 'POST' : 'GET')) throw fail(405, 'Method not allowed')
+    if (route === 'file') req.fileId = match[3]
     const publicationId = isContactId(match[1]) ? (await store.getByContactId(match[1]))?.publicationId : match[1]
     if (!publicationId) throw fail(503, 'Agent offline')
     if (cluster) { await cluster.forward(req, res, publicationId, route); return }
@@ -117,6 +118,7 @@ export function createRelay({ origin, database = ':memory:', store: suppliedStor
     if (!row || row.blocked || !row.enabled || row.expiresAt && row.expiresAt <= Date.now() || !s?.ready ||
         row.generation !== s.generation || expected && !sameSession(expected, s)) throw fail(503, 'Agent offline')
     if (active >= maxConcurrent || s.flows.size >= LIMIT.concurrent) throw fail(429, 'Agent busy')
+    if (route === 'file' && !s.files) throw fail(501, 'Update Connector to enable file downloads')
     if (Number(req.headers['content-length'] ?? 0) > LIMIT.body) throw fail(413, 'Body too large')
     const headers = headersOf(req.headers), requestId = expected?.requestId ?? randomUUID()
     const remaining = connectionMaxAge ? connectionMaxAge - (Date.now() - s.createdAt) - 250 : requestTimeout
@@ -141,7 +143,7 @@ export function createRelay({ origin, database = ':memory:', store: suppliedStor
     try {
       if (accepted) await accepted()
       const body = await readLimited(req)
-      if (route === 'card' && body.length) throw fail(400, 'Card GET must not have a body')
+      if (route !== 'rpc' && body.length) throw fail(400, 'Read requests must not have a body')
       if (f.done || sessions.get(row.publicationId) !== s || !s.ready) throw fail(503, 'Agent disconnected before dispatch')
       // Input can arrive after a cross-instance disable/replacement. Validate
       // again immediately before dispatch, including the shared ownership lease.
@@ -150,7 +152,8 @@ export function createRelay({ origin, database = ':memory:', store: suppliedStor
       if (cluster) await cluster.refresh(s)
       if (f.done || sessions.get(row.publicationId) !== s || !s.ready) throw fail(503, 'Agent disconnected before dispatch')
       f.touch(LIMIT.first)
-      await wire(s.ws, s, { type: 'request_begin', requestId, route, headers, length: body.length })
+      await wire(s.ws, s, { type: 'request_begin', requestId, route, headers, length: body.length,
+        ...route === 'file' ? {fileId:req.fileId, method:req.method} : {} })
       let seq = 0
       for (let offset = 0; offset < body.length; offset += LIMIT.chunk) await wire(s.ws, s, { type: 'request_data', requestId, seq: seq++, data: body.subarray(offset, offset + LIMIT.chunk).toString('base64') })
       await wire(s.ws, s, { type: 'request_end', requestId, seq })
@@ -197,7 +200,7 @@ export function createRelay({ origin, database = ':memory:', store: suppliedStor
             if (sessions.get(s.publicationId) !== s || !sameSession(m, s)) return
             if (m.type === 'ready') {
               if (s.ready || s.readyPending) throw new Error('Not available')
-              s.readyPending=true
+              s.readyPending=true; s.files = m.files === 1
               const ready=(async()=>{
                 const fresh=await store.get(s.publicationId)
                 if(closing || sessions.get(s.publicationId)!==s || ws.readyState!==1) return
