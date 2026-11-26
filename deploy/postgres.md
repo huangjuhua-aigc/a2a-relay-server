@@ -24,6 +24,14 @@ UUID paths survive import; full URLs also depend on `RELAY_ORIGIN`. Changing the
 
 ## VKE manifests
 
+Set `RELAY_NAMESPACE` for an independent namespace (default `a2a-relay`) and `RELAY_IMAGE_PULL_SECRET` for a registry Secret in that namespace. Migration Jobs, Service and Deployment all use it; match the namespace in every kubectl command. Separate Relay services also need separate databases and runtime roles: namespaces alone do not isolate registrations or device credentials.
+
+For an existing ALB, add a dedicated hostname Ingress and certificate-ID Secret without replacing other hosts or the default listener certificate. DNS may CNAME to the ALB hostname. Verify certificate SAN, expiry and private-key match. Local certificate archives may live in `.private-deploy/<deployment>/certs/`, excluded from Git, Docker build context and Vercel uploads; never put private keys in manifests, logs or documentation.
+
+Container mode defaults to `RELAY_CONNECTION_MAX_AGE_MS=0`, without Function-driven connection rotation. Network failures, ALB timeouts and restarts can still disconnect tunnels. A single replica needs no Redis; multiple replicas require shared Redis coordination.
+
+`scripts/smoke-public.mjs` verifies registration, WSS, SSE, file GET/HEAD/Range and authentication. `RELAY_QA_IDLE_MS=310000` additionally observes the same socket for over five idle minutes. Application restart testing is opt-in via `RELAY_QA_KUBECONFIG`; use `RELAY_QA_NAMESPACE` to target only the candidate deployment. It uses synthetic local responses/files, not a real model, and disables its QA publication afterward.
+
 `deploy/render-postgres.mjs migrate|workload` renders a namespace and migration Job or internal ClusterIP workload. Set `RELAY_IMAGE` to a fixed release tag/digest and `RELAY_ORIGIN` to the final HTTPS origin. Optional: `RELAY_PG_CA_SECRET`, `RELAY_MIGRATION_ID`, `RELAY_REGISTRATION` (defaults closed), verified `RELAY_TRUSTED_PROXY_IPS`.
 
 Create Secrets `a2a-relay-db-migration` and `a2a-relay-db` with key `url` from private files. The CA Secret uses `ca.crt`. Finish the migration Job before deploying the application; configure image pull access first. Jobs do not auto-retry, and later migrations need a new ID. Restart the application after rotating mounted connection files.

@@ -29,6 +29,18 @@ test('PostgreSQL workload references private Secrets, separates migrations and p
   assert.deepEqual(job.spec.template.spec.containers[0].command,['node','src/database.mjs','migrate'])
 })
 
+test('independent PostgreSQL relays keep every resource and credential reference in their selected namespace', () => {
+  const opts={origin:'https://relay.example.test',image:'registry.example/relay:release-1',namespace:'huangjuhua-relay',imagePullSecret:'relay-registry'}
+  for (const stage of ['migrate','workload']) {
+    const {items}=renderPostgres({...opts,stage})
+    for (const item of items) assert.equal(item.kind==='Namespace'?item.metadata.name:item.metadata.namespace,opts.namespace)
+    const workload=items.find(x=>['Deployment','Job'].includes(x.kind))
+    assert.deepEqual(workload.spec.template.spec.imagePullSecrets,[{name:'relay-registry'}])
+  }
+  for (const namespace of ['', '../a2a-relay', 'Uppercase', '-relay', 'relay-', 'a'.repeat(64)]) assert.throws(()=>renderPostgres({...opts,namespace}),/namespace/)
+  assert.throws(()=>renderPostgres({...opts,imagePullSecret:'../credentials'}),/image pull/)
+})
+
 test('VKE workload preserves identity storage and keeps the HTTP listener private', () => {
   const opts = { stage: 'workload', publicIP: '203.0.113.7', image: 'registry.example/relay:release-1', httpsImage: 'registry.example/relay-https:release-1' }
   for (const ip of ['localhost', 'http://1.2.3.4', '127.0.0.1', '192.168.1.3', '172.16.1.2', '10.0.0.1']) assert.throws(() => renderVke({ ...opts, publicIP: ip }), /IPv4/)

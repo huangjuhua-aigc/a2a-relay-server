@@ -12,3 +12,4 @@ qa-artifacts
 tests
 scripts
 deploy
+.private-deploy

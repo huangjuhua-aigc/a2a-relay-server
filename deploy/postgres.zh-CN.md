@@ -69,6 +69,14 @@ node src/database.mjs import-sqlite 'C:\private\a2a-relay\backup\relay.db'
 
 ## VKE内网清单
 
+可设置 `RELAY_NAMESPACE` 为独立命名空间（默认 `a2a-relay`），设置 `RELAY_IMAGE_PULL_SECRET` 引用该命名空间内的镜像拉取 Secret。迁移 Job、Service 和 Deployment 都使用同一命名空间；`kubectl -n` 也必须对应。独立 Relay 应使用独立数据库及运行账号，仅换命名空间不会隔离注册表或防止设备密钥跨服务复用。
+
+使用已有 ALB 时，为新域名创建单独的 Ingress，并引用证书中心证书 ID 对应的 Secret；不要覆盖其他域名的 Ingress 或默认监听器证书。DNS 可用 CNAME 指向 ALB 实例域名。部署前核对证书 SAN、有效期和私钥匹配。项目本地证书可保存于 `.private-deploy/<deployment>/certs/`，该目录已从 Git、Docker 构建上下文和 Vercel 上传中排除；私钥不要写入清单、日志或文档。
+
+普通容器运行时默认 `RELAY_CONNECTION_MAX_AGE_MS=0`，不会按 Vercel Function 的时限主动轮换连接。网络故障、ALB 超时或服务重启仍可能使连接中断。单副本不需要 Redis；扩到多副本前必须配置同一 Redis 协调层。
+
+公网验收脚本 `scripts/smoke-public.mjs` 覆盖注册、WSS、SSE、文件 GET/HEAD/Range 和鉴权。可选 `RELAY_QA_IDLE_MS=310000` 验证超过 5 分钟空闲仍为同一连接。只有设置 `RELAY_QA_KUBECONFIG` 才执行应用重启；同时用 `RELAY_QA_NAMESPACE` 指定候选服务的命名空间，避免重启其他部署。测试使用本机合成响应和文件，不调用真实模型；结束会关闭测试注册的发布状态。
+
 `deploy/render-postgres.mjs migrate|workload`只渲染namespace、迁移Job或内网应用。它不创建ALB、Ingress、域名和证书。原`render-vke.mjs`仍是独立CLB+Caddy+SQLite方案，不要混用。
 
 先确认镜像仓库拉取权限；以文件创建Secret，不把密码展开到命令参数中：

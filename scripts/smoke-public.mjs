@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import https from 'node:https'
 import dns from 'node:dns'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,9 +13,14 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const origin = new URL(process.env.RELAY_QA_ORIGIN ?? '').origin
+const namespace = process.env.RELAY_QA_NAMESPACE ?? 'a2a-relay'
+assert.match(namespace, /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, 'Invalid QA namespace')
+const idleMs = Number(process.env.RELAY_QA_IDLE_MS ?? 0)
+assert.ok(Number.isSafeInteger(idleMs) && idleMs >= 0 && idleMs <= 900000, 'Invalid idle observation duration')
 assert.ok(origin.startsWith('https://'), 'Live QA requires verified HTTPS')
 assert.ok(process.env.A2A_CONNECTOR_SOURCE && process.env.RELAY_QA_STATE_FILE)
 const { Connector, control } = await import(pathToFileURL(join(process.env.A2A_CONNECTOR_SOURCE, 'src/connector.mjs')))
+const { preferContactAddress } = await import(pathToFileURL(join(process.env.A2A_CONNECTOR_SOURCE, 'src/public-address.mjs')))
 const existingState = process.env.RELAY_QA_EXISTING_STATE_FILE
 const state = existingState ? JSON.parse(await readFile(existingState, 'utf8'))
   : { registrations: {}, desiredEnabled: true, revision: 1, operationId: randomUUID(), cloudSyncPending: true }
@@ -24,6 +29,8 @@ if (existingState) {
   assert.equal(state.desiredEnabled, true, 'Existing QA state must request publication')
 }
 const visitor = randomBytes(32).toString('hex')
+const fileId = randomUUID(), fileBytes = randomBytes(1300017)
+const fileEtag = `"${createHash('sha256').update(fileBytes).digest('hex')}"`
 const report = { origin, startedAt: new Date().toISOString(), checks: [] }
 if (process.env.RELAY_QA_LOOPBACK_TUNNEL === '1') {
   // The caller owns a temporary 127.0.0.1:443 tunnel to the ALB public IP.
@@ -39,7 +46,7 @@ if (process.env.RELAY_QA_LOOPBACK_TUNNEL === '1') {
   report.networkPath = 'test-process loopback tunnel via VKE to ALB public IP; TLS verification enabled'
 } else report.networkPath = 'ordinary client HTTPS connection'
 const save = () => writeFile(process.env.RELAY_QA_STATE_FILE, JSON.stringify(state), { mode: 0o600 })
-let connector, snapshot, info, accepted = 0, responseFinished = false, restarted = false
+let connector, snapshot, info, accepted = 0, responseFinished = false, restarted = false, finishProbe
 const local = createServer(async (req, res) => {
   if (req.url === '/.well-known/agent-card.json') {
     res.setHeader('content-type', 'application/json')
@@ -47,19 +54,33 @@ const local = createServer(async (req, res) => {
     return
   }
   if (req.headers.authorization !== `Bearer ${visitor}`) { res.writeHead(401); res.end('Unauthorized'); return }
+  if (req.url === `/a2a/files/${fileId}`) {
+    const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? '')
+    const start = range ? Number(range[1]) : 0, end = range ? Math.min(Number(range[2]), fileBytes.length - 1) : fileBytes.length - 1
+    res.writeHead(range ? 206 : 200, { 'content-type':'video/mp4', 'content-length':String(end - start + 1), etag:fileEtag,
+      'accept-ranges':'bytes', 'content-disposition':'attachment; filename="transport-test.mp4"',
+      ...range ? {'content-range':`bytes ${start}-${end}/${fileBytes.length}`} : {} })
+    res.end(req.method === 'HEAD' ? undefined : fileBytes.subarray(start, end + 1)); return
+  }
   let text = ''; for await (const chunk of req) text += chunk
   accepted++; responseFinished = false
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
   res.write(`data: ${JSON.stringify({ echo: text, text: '你好🌈' })}\n\n`)
-  setTimeout(() => { responseFinished = true; res.end('data: done\n\n') }, 1200)
+  // Let the client acknowledge the first chunk before EOF. A short fixed timer
+  // can mistake a slow WAN round trip for proxy buffering.
+  const streamingProbe = typeof JSON.parse(text).nonce === 'string'
+  const finish = () => { responseFinished = true; res.end('data: done\n\n') }
+  const timer = setTimeout(finish, streamingProbe ? 10000 : 1200)
+  if (streamingProbe) finishProbe = () => { clearTimeout(timer); finish() }
+  res.on('close', () => clearTimeout(timer))
 })
-function request(url, { method = 'GET', body, token, onChunk } = {}) {
+function request(url, { method = 'GET', body, token, onChunk, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const req = https.request(url, { method, timeout: 15000, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}) } }, res => {
-      let text = ''
-      res.on('data', chunk => { text += chunk; onChunk?.(chunk) })
+    const req = https.request(url, { method, timeout: 15000, headers: { ...headers, ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}) } }, res => {
+      const chunks = []
+      res.on('data', chunk => { chunks.push(chunk); onChunk?.(chunk) })
       res.on('error', reject)
-      res.on('end', () => resolve({ status: res.statusCode, text }))
+      res.on('end', () => { const bytes = Buffer.concat(chunks); resolve({ status: res.statusCode, headers:res.headers, text:bytes.toString(), bytes }) })
     })
     req.on('error', reject); req.on('timeout', () => req.destroy(new Error('Request timeout; request was not replayed')))
     req.end(body)
@@ -91,23 +112,43 @@ try {
   assert.equal((await request(info.publicRpcUrl, { method: 'POST', body: '{}', token: 'wrong' })).status, 401)
   let streamed = false
   const nonce = randomUUID()
-  const response = await request(info.publicRpcUrl, { method: 'POST', body: JSON.stringify({ nonce }), token: visitor, onChunk: () => { if (!responseFinished) streamed = true } })
+  const response = await request(info.publicRpcUrl, { method: 'POST', body: JSON.stringify({ nonce }), token: visitor, onChunk: () => { if (!responseFinished) { streamed = true; finishProbe?.() } } })
   assert.equal(response.status, 200); assert.ok(streamed, 'ALB must flush SSE before the response ends')
   assert.ok(response.text.includes(nonce) && response.text.includes('你好🌈'))
   assert.equal(accepted, 1)
   report.checks.push('real Connector WSS, rewritten Agent Card, visitor auth, unbuffered UTF-8 SSE')
+  const fileUrl = `${info.publicRpcUrl}/files/${fileId}`
+  const head = await request(fileUrl, {method:'HEAD',token:visitor})
+  assert.equal(head.status,200); assert.equal(head.bytes.length,0); assert.equal(Number(head.headers['content-length']),fileBytes.length)
+  const full = await request(fileUrl,{token:visitor})
+  assert.equal(full.status,200); assert.equal(full.headers.etag,fileEtag); assert.deepEqual(full.bytes,fileBytes)
+  const range = await request(fileUrl,{token:visitor,headers:{range:'bytes=11-1048586','if-range':fileEtag}})
+  assert.equal(range.status,206); assert.equal(range.headers['content-range'],`bytes 11-1048586/${fileBytes.length}`)
+  assert.deepEqual(range.bytes,fileBytes.subarray(11,1048587))
+  assert.equal((await request(fileUrl,{token:'wrong'})).status,401)
+  assert.equal((await request(fileUrl,{method:'DELETE',token:visitor})).status,405)
+  report.checks.push('binary file GET/HEAD/Range, immutable ETag, byte integrity and authentication through public Relay')
+  if (idleMs) {
+    const socket = connector.ws
+    await new Promise(resolve => setTimeout(resolve,idleMs))
+    assert.equal(connector.ws,socket,'Idle Connector must not rotate during the requested observation')
+    assert.equal(snapshot?.state,'online'); assert.equal(socket.readyState,1)
+    assert.equal((await request(info.publicCardUrl)).status,200)
+    report.checks.push(`same Connector socket remained online for ${idleMs} ms without chat traffic`)
+  }
   const oldSocket = connector.ws
   connector.ws.terminate()
   await until(() => snapshot?.state === 'online' && connector.ws !== oldSocket)
   assert.equal(accepted, 1)
   report.checks.push('Connector reconnect without replaying completed requests')
   if (process.env.RELAY_QA_KUBECONFIG) {
-    const exec = promisify(execFile), args = ['--kubeconfig', process.env.RELAY_QA_KUBECONFIG, '-n', 'a2a-relay']
+    const exec = promisify(execFile), args = ['--kubeconfig', process.env.RELAY_QA_KUBECONFIG, '-n', namespace]
     const socketBefore = connector.ws
     await exec('kubectl', [...args, 'rollout', 'restart', 'deployment/a2a-relay'], { windowsHide: true, timeout: 30000 })
     await exec('kubectl', [...args, 'rollout', 'status', 'deployment/a2a-relay', '--timeout=90s'], { windowsHide: true, timeout: 95000 })
     await until(() => snapshot?.state === 'online' && connector.ws !== socketBefore)
-    const recovered = await control(origin, '/v1/publication', state.registrations[origin].token)
+    const recovered = preferContactAddress(await control(origin, '/v1/publication', state.registrations[origin].token), origin)
+    assert.equal(recovered.publicationId, info.publicationId)
     assert.equal(recovered.contactId, info.contactId); assert.equal(recovered.publicRpcUrl, info.publicRpcUrl)
     assert.equal(accepted, 1)
     assert.equal((await request(info.publicRpcUrl, { method: 'POST', body: '{}', token: visitor })).status, 200)
